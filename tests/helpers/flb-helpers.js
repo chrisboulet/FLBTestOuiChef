@@ -56,8 +56,15 @@ async function loginToFLB(page, email, password, dadhriNumber = '') {
   // Gérer les popups potentiels avant de remplir le formulaire
   await handleFLBPopups(page);
   
-  // Remplir le formulaire avec les 3 champs
-  await page.locator('input[name="login[email]"], #email').first().fill(email);
+  // Attendre la stabilisation de la page
+  await page.waitForTimeout(1000);
+  
+  // Remplir le formulaire avec sélecteurs robustes
+  // Email - utiliser le sélecteur le plus spécifique
+  const emailField = page.locator('form[data-role="email-with-possible-login"] input[name="login[email]"]')
+    .or(page.locator('input[name="login[email]"]'))
+    .or(page.locator('#email'));
+  await emailField.first().fill(email);
   
   // Champ numéro Dadhri (optionnel)
   const dadhriField = page.locator('input[name="dadhri-number"], #dadhri-number');
@@ -66,13 +73,19 @@ async function loginToFLB(page, email, password, dadhriNumber = '') {
     console.log('✓ Numéro Dadhri renseigné');
   }
   
-  // Champ mot de passe
-  await page.locator('input[name="login[password]"], input[name="password"], #pass').first().fill(password);
+  // Mot de passe - sélecteur spécifique pour éviter duplication
+  const passwordField = page.locator('form[data-role="email-with-possible-login"] input[name="login[password]"]')
+    .or(page.locator('input[name="login[password]"]'))
+    .or(page.locator('input[type="password"][name="password"]'));
+  await passwordField.first().fill(password);
   
-  // Soumettre
-  await page.locator('#send2, button[type="submit"]').first().click();
+  // Soumettre avec sélecteur robuste
+  const submitButton = page.locator('form[data-role="email-with-possible-login"] button[type="submit"]')
+    .or(page.locator('#send2'))
+    .or(page.locator('button[type="submit"]'));
+  await submitButton.first().click();
   
-  // Attendre redirection ou popup
+  // Attendre redirection ou popup avec gestion timeout
   await page.waitForTimeout(2000);
   
   // Gérer le popup de sélection livraison/ramassage
