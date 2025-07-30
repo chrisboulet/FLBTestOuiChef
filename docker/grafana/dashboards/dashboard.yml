@@ -1,0 +1,44 @@
+# ========================================
+# FLB Solutions - Grafana Dashboard Config
+# Configuration des dashboards automatiques
+# ========================================
+
+apiVersion: 1
+
+# Configuration des providers de dashboards
+providers:
+  # Provider principal pour dashboards FLB
+  - name: 'FLB Solutions Dashboards'
+    orgId: 1
+    folder: 'FLB Tests'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    
+    options:
+      path: /etc/grafana/provisioning/dashboards
+
+  # Provider pour dashboards système
+  - name: 'System Dashboards'
+    orgId: 1
+    folder: 'System'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    
+    options:
+      path: /etc/grafana/provisioning/dashboards/system
+
+  # Provider pour dashboards personnalisés
+  - name: 'Custom Dashboards'
+    orgId: 1
+    folder: 'Custom'
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 60
+    allowUiUpdates: true
+    
+    options:
+      path: /etc/grafana/provisioning/dashboards/custom

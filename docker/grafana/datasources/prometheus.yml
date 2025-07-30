@@ -1,0 +1,73 @@
+# ========================================
+# FLB Solutions - Grafana Datasource Config
+# Configuration Prometheus pour dashboards
+# ========================================
+
+apiVersion: 1
+
+# Liste des datasources
+datasources:
+  # Datasource principal: Prometheus
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://monitoring:9090
+    isDefault: true
+    
+    # Configuration JSON
+    jsonData:
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: 2.40.0
+      cacheLevel: 'High'
+      disableMetricsLookup: false
+      customQueryParameters: ''
+      
+      # Interval par défaut
+      timeInterval: '15s'
+      queryTimeout: '60s'
+      
+      # Configuration des alertes
+      alerting: true
+      
+    # Sécurité (si authentification Prometheus activée)
+    # basicAuth: false
+    # basicAuthUser: admin
+    # secureJsonData:
+    #   basicAuthPassword: password
+    
+    # Labels et tags
+    orgId: 1
+    version: 1
+    editable: true
+
+  # Datasource secondaire: Métriques Test (si disponible)
+  - name: Test Metrics
+    type: prometheus
+    access: proxy
+    url: http://playwright-tests:3001
+    isDefault: false
+    
+    jsonData:
+      httpMethod: GET
+      timeInterval: '30s'
+      queryTimeout: '30s'
+      
+    orgId: 1
+    version: 1
+    editable: true
+
+  # Datasource logs (si Loki configuré)
+  # - name: Loki
+  #   type: loki
+  #   access: proxy
+  #   url: http://loki:3100
+  #   isDefault: false
+  #   
+  #   jsonData:
+  #     maxLines: 1000
+  #     timeout: 60s
+  #     
+  #   orgId: 1
+  #   version: 1

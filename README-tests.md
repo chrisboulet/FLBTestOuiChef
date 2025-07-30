@@ -1,4 +1,4 @@
-# 🧪 Tests de Régression FLB Solutions
+# 🧪 Tests de Régression FLB Solutions Alimentaires
 
 Tests automatisés E2E avec Playwright pour le site FLB Solutions.
 **Environnement virtuel intégré - Aucune installation globale requise !**

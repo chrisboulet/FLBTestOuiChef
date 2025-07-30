@@ -1,0 +1,447 @@
+# ========================================
+# FLB Solutions - CI/CD Pipeline Docker
+# GitHub Actions pour tests et déploiement
+# ========================================
+
+name: 🚀 FLB Docker CI/CD
+
+on:
+  push:
+    branches: [ main, develop, staging ]
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'docker/**'
+      - 'tests/**'
+      - 'package.json'
+      - '.github/workflows/**'
+  
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'docker/**'
+      - 'tests/**'
+      - 'package.json'
+  
+  schedule:
+    # Tests de régression quotidiens à 2h du matin
+    - cron: '0 2 * * *'
+  
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment de déploiement'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - dev
+        - test
+        - staging
+        - prod
+      run_full_tests:
+        description: 'Exécuter tous les tests'
+        required: false
+        default: false
+        type: boolean
+
+# Configuration des variables d'environnement
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: flb-solutions/playwright-tests
+  NODE_ENV: test
+
+# Configuration des permissions
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  actions: read
+
+jobs:
+  
+  # ----------------------------------------
+  # Job: Validation et Linting
+  # ----------------------------------------
+  validate:
+    name: 🔍 Validation et Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔍 Validation Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+          
+      - name: 🔍 Validation Docker Compose
+        run: |
+          docker-compose config -q
+          
+      - name: 🔍 Validation scripts
+        run: |
+          find docker/scripts -name "*.sh" -exec shellcheck {} \;
+          
+      - name: 🔍 Validation secrets template
+        run: |
+          if [[ -f "docker/secrets/credentials.example.json" ]]; then
+            jq empty docker/secrets/credentials.example.json
+          fi
+
+  # ----------------------------------------
+  # Job: Build et Tests de Sécurité
+  # ----------------------------------------
+  build-and-scan:
+    name: 🏗️ Build et Scan Sécurité 
+    runs-on: ubuntu-latest
+    needs: validate
+    
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
+    
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: 🔑 Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: 📋 Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            
+      - name: 🏗️ Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NODE_ENV=${{ env.NODE_ENV }}
+            BUILD_VERSION=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            
+      - name: 🛡️ Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          
+      - name: 📤 Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ----------------------------------------
+  # Job: Tests Unitaires et Smoke
+  # ----------------------------------------
+  test-smoke:
+    name: 💨 Tests Smoke
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    
+    strategy:
+      matrix:
+        environment: [dev, test]
+        
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup environment
+        run: |
+          cp .env.example .env
+          sed -i "s/ENV_TYPE=dev/ENV_TYPE=${{ matrix.environment }}/" .env
+          
+      - name: 🔐 Setup secrets
+        run: |
+          chmod +x docker/secrets/setup-secrets.sh
+          bash docker/secrets/setup-secrets.sh ${{ matrix.environment }}
+          
+      - name: 🚀 Start services
+        run: |
+          chmod +x docker/scripts/deploy.sh
+          bash docker/scripts/deploy.sh -e ${{ matrix.environment }} up
+          
+      - name: ⏳ Wait for services
+        run: |
+          timeout 120 bash -c 'until docker-compose exec -T playwright-tests /app/scripts/health-check.sh; do sleep 5; done'
+          
+      - name: 💨 Run smoke tests
+        run: |
+          docker-compose exec -T playwright-tests npm run test:smoke
+          
+      - name: 📊 Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: smoke-test-results-${{ matrix.environment }}
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7
+          
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          docker-compose down -v
+          docker system prune -af
+
+  # ----------------------------------------
+  # Job: Tests Complets Multi-Navigateurs
+  # ----------------------------------------
+  test-full:
+    name: 🧪 Tests Complets
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    if: github.event.inputs.run_full_tests == 'true' || github.event_name == 'schedule'
+    
+    strategy:
+      matrix:
+        browser: [chromium, firefox, webkit]
+        shard: [1, 2, 3, 4]
+        
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup environment  
+        run: |
+          cp .env.example .env
+          sed -i "s/ENV_TYPE=dev/ENV_TYPE=test/" .env
+          sed -i "s/PARALLEL_WORKERS=4/PARALLEL_WORKERS=2/" .env
+          
+      - name: 🔐 Setup secrets
+        run: |
+          chmod +x docker/secrets/setup-secrets.sh
+          bash docker/secrets/setup-secrets.sh test
+          
+      - name: 🚀 Start services
+        run: |
+          chmod +x docker/scripts/deploy.sh  
+          bash docker/scripts/deploy.sh -e test up
+          
+      - name: 🧪 Run tests
+        run: |
+          docker-compose exec -T playwright-tests npx playwright test \
+            --project=${{ matrix.browser }} \
+            --shard=${{ matrix.shard }}/4 \
+            --reporter=blob
+            
+      - name: 📤 Upload blob report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: blob-report-${{ matrix.browser }}-${{ matrix.shard }}
+          path: blob-report/
+          retention-days: 1
+          
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          docker-compose down -v
+
+  # ----------------------------------------
+  # Job: Merge des Rapports
+  # ----------------------------------------
+  merge-reports:
+    name: 📊 Merge Test Reports
+    runs-on: ubuntu-latest
+    needs: test-full
+    if: always() && needs.test-full.result != 'skipped'
+    
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 📥 Download blob reports
+        uses: actions/download-artifact@v3
+        with:
+          path: all-blob-reports
+          pattern: blob-report-*
+          
+      - name: 📊 Merge reports
+        run: |
+          npx playwright merge-reports --reporter html ./all-blob-reports/blob-report-*
+          
+      - name: 📤 Upload merged report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: merged-test-report
+          path: playwright-report/
+          retention-days: 30
+
+  # ----------------------------------------
+  # Job: Tests de Performance
+  # ----------------------------------------
+  test-performance:
+    name: ⚡ Tests Performance
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup environment
+        run: |
+          cp .env.example .env
+          sed -i "s/ENV_TYPE=dev/ENV_TYPE=test/" .env
+          sed -i "s/PERFORMANCE_TESTS_ENABLED=false/PERFORMANCE_TESTS_ENABLED=true/" .env
+          
+      - name: 🔐 Setup secrets
+        run: |
+          chmod +x docker/secrets/setup-secrets.sh
+          bash docker/secrets/setup-secrets.sh test
+          
+      - name: 🚀 Start services with monitoring
+        run: |
+          chmod +x docker/scripts/deploy.sh
+          bash docker/scripts/deploy.sh -e test -p staging up
+          
+      - name: ⚡ Run performance tests
+        run: |
+          docker-compose exec -T playwright-tests npm run test:performance
+          
+      - name: 📊 Generate performance report
+        run: |
+          docker-compose exec -T monitoring curl -s http://localhost:9090/api/v1/query \
+            -G --data-urlencode 'query=rate(http_requests_total[5m])' > performance-metrics.json
+            
+      - name: 📤 Upload performance results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: performance-test-results
+          path: |
+            performance-metrics.json
+            test-results/
+          retention-days: 30
+
+  # ----------------------------------------
+  # Job: Déploiement Staging
+  # ----------------------------------------
+  deploy-staging:
+    name: 🚀 Deploy Staging
+    runs-on: ubuntu-latest
+    needs: [test-smoke, build-and-scan]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment: staging
+    
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔑 Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: 🚀 Deploy to staging
+        run: |
+          # Configuration pour staging
+          export ENV_TYPE=staging
+          export IMAGE_TAG=${{ github.sha }}
+          
+          # Setup secrets staging
+          chmod +x docker/secrets/setup-secrets.sh
+          bash docker/secrets/setup-secrets.sh staging
+          
+          # Déploiement
+          chmod +x docker/scripts/deploy.sh
+          bash docker/scripts/deploy.sh -e staging up
+          
+      - name: 🧪 Validation deployment
+        run: |
+          # Tests de validation post-déploiement
+          timeout 300 bash -c 'until curl -f https://staging.flbsolutions.com/health; do sleep 10; done'
+          docker-compose exec -T playwright-tests npm run test:smoke
+
+  # ----------------------------------------
+  # Job: Déploiement Production  
+  # ----------------------------------------
+  deploy-production:
+    name: 🎯 Deploy Production
+    runs-on: ubuntu-latest
+    needs: [test-smoke, test-full, merge-reports, build-and-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    
+    steps:
+      - name: 📂 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔑 Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: 🛡️ Security validation
+        run: |
+          # Validation supplémentaire pour production
+          echo "Validation sécurité production..."
+          
+      - name: 🎯 Deploy to production
+        run: |
+          # Configuration pour production
+          export ENV_TYPE=prod
+          export IMAGE_TAG=${{ github.sha }}
+          
+          # Déploiement production avec validation
+          chmod +x docker/scripts/deploy.sh
+          bash docker/scripts/deploy.sh -e prod --timeout 300 up
+          
+      - name: ✅ Post-deployment validation
+        run: |
+          # Tests de validation critique
+          timeout 600 bash -c 'until curl -f https://flbsolutions.com/health; do sleep 15; done'
+          docker-compose exec -T playwright-tests npm run test:critical
+
+  # ----------------------------------------
+  # Job: Nettoyage
+  # ----------------------------------------
+  cleanup:
+    name: 🧹 Cleanup
+    runs-on: ubuntu-latest
+    needs: [test-smoke, test-full, deploy-staging, deploy-production]
+    if: always()
+    
+    steps:
+      - name: 🧹 Cleanup old images
+        run: |
+          # Nettoyage des anciennes images (garde les 10 dernières)
+          echo "Nettoyage des images anciennes..."

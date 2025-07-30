@@ -1,0 +1,122 @@
+# ========================================
+# FLB Solutions - Prometheus Configuration
+# Monitoring et métriques pour tests E2E
+# ========================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'flb-tests-monitor'
+    environment: 'docker'
+
+# Configuration règles d'alertes
+rule_files:
+  - "alerts/*.yml"
+
+# Configuration Alertmanager (optionnel)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# Configuration des tâches de scraping
+scrape_configs:
+  
+  # Prometheus lui-même
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # Container de tests Playwright
+  - job_name: 'playwright-tests'
+    static_configs:
+      - targets: ['playwright-tests:3000']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    scrape_timeout: 10s
+    
+    # Labels personnalisés
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'playwright_.*'
+        target_label: service
+        replacement: 'playwright'
+        
+    # Métriques spécifiques aux tests
+    params:
+      format: ['prometheus']
+
+  # Redis métriques
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    scrape_interval: 30s
+    
+    # Utilisation d'un exporteur Redis (si disponible)
+    # Dans ce cas, nous surveillons via logs ou métriques custom
+
+  # Nginx métriques
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:8080']
+    scrape_interval: 30s
+    metrics_path: /metrics
+    
+    # Métriques nginx via stub_status
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'nginx_.*'
+        target_label: service
+        replacement: 'nginx'
+
+  # Métriques système Docker
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['host.docker.internal:9323']
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    
+    # Si cAdvisor est disponible
+    honor_labels: true
+    
+  # Métriques personnalisées FLB
+  - job_name: 'flb-custom-metrics'
+    static_configs:
+      - targets: ['playwright-tests:3001']
+    scrape_interval: 60s
+    metrics_path: /custom-metrics
+    scrape_timeout: 15s
+    
+    # Headers personnalisés si nécessaire
+    # headers:
+    #   Authorization: ['Bearer token-here']
+
+# Configuration du stockage local
+storage:
+  tsdb:
+    path: /prometheus
+    retention.time: 15d
+    retention.size: 1GB
+    
+    # Optimisations pour environnement de test
+    wal-compression: true
+    
+    # Compaction settings
+    min-block-duration: 2h
+    max-block-duration: 25h
+
+# Configuration remote write (optionnel pour environnement cloud)
+# remote_write:
+#   - url: "https://remote-storage.example.com/api/v1/write"
+#     queue_config:
+#       max_samples_per_send: 1000
+#       max_shards: 200
+#       capacity: 2500
+
+# Configuration remote read (optionnel)
+# remote_read:
+#   - url: "https://remote-storage.example.com/api/v1/read"

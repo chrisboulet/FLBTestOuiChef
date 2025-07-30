@@ -1,0 +1,275 @@
+# ========================================
+# FLB Solutions - Docker Compose Multi-Environnements
+# Architecture: Tests E2E avec isolation complète
+# Environnements: dev, test, staging, prod
+# Sécurité: Secrets management, networks isolés
+# ========================================
+
+version: '3.8'
+
+# ----------------------------------------
+# Configuration des Secrets
+# ----------------------------------------
+secrets:
+  flb_credentials:
+    file: ./docker/secrets/credentials.json
+  api_keys:
+    file: ./docker/secrets/api-keys.json
+  ssl_cert:
+    file: ./docker/secrets/ssl/cert.pem
+  ssl_key:
+    file: ./docker/secrets/ssl/key.pem
+
+# ----------------------------------------
+# Configuration des Réseaux
+# ----------------------------------------
+networks:
+  flb-frontend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  flb-backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+  flb-monitoring:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+
+# ----------------------------------------
+# Configuration des Volumes
+# ----------------------------------------
+volumes:
+  playwright-browsers:
+    driver: local
+  test-results:
+    driver: local
+  test-reports:
+    driver: local
+  redis-data:
+    driver: local
+  grafana-data:
+    driver: local
+  prometheus-data:
+    driver: local
+
+# ----------------------------------------
+# Services Principaux
+# ----------------------------------------
+services:
+  
+  # Service Principal: Tests Playwright
+  playwright-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NODE_ENV: ${NODE_ENV:-test}
+        BUILD_VERSION: ${BUILD_VERSION:-latest}
+    image: flb-solutions/playwright-tests:${TAG:-latest}
+    container_name: flb-tests-${ENV:-dev}
+    
+    environment:
+      - NODE_ENV=${NODE_ENV:-test}
+      - ENV_TYPE=${ENV:-dev}
+      - BASE_URL=${BASE_URL:-https://www.flbsolutions.com}
+      - PARALLEL_WORKERS=${PARALLEL_WORKERS:-4}
+      - HEADLESS=${HEADLESS:-true}
+      - BROWSER_TIMEOUT=${BROWSER_TIMEOUT:-30000}
+      - DEBUG=${DEBUG:-false}
+      
+    secrets:
+      - source: flb_credentials
+        target: /app/config/credentials.json
+        mode: 0444
+      - source: api_keys
+        target: /app/config/api-keys.json
+        mode: 0444
+        
+    volumes:
+      - playwright-browsers:/opt/playwright-browsers:ro
+      - test-results:/app/test-results
+      - test-reports:/app/reports
+      - ./tests:/app/tests:ro
+      - ./playwright.config.js:/app/playwright.config.js:ro
+      
+    networks:
+      - flb-frontend
+      - flb-monitoring
+      
+    depends_on:
+      redis:
+        condition: service_healthy
+      monitoring:
+        condition: service_started
+        
+    restart: unless-stopped
+    
+    # Resource limits pour éviter la saturation
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+          
+    # Health check pour monitoring
+    healthcheck:
+      test: ["CMD", "/app/scripts/health-check.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Service Cache: Redis pour résultats de tests
+  redis:
+    image: redis:7-alpine
+    container_name: flb-redis-${ENV:-dev}
+    
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-flb-secure-password}
+      
+    volumes:
+      - redis-data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      
+    networks:
+      - flb-backend
+      
+    command: redis-server /usr/local/etc/redis/redis.conf --requirepass ${REDIS_PASSWORD:-flb-secure-password}
+    
+    restart: unless-stopped
+    
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+          
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Service Monitoring: Métriques et observabilité
+  monitoring:
+    image: prom/prometheus:latest
+    container_name: flb-monitoring-${ENV:-dev}
+    
+    volumes:
+      - prometheus-data:/prometheus
+      - ./docker/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      
+    networks:
+      - flb-monitoring
+      
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+      
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      
+    restart: unless-stopped
+
+  # Service Visualisation: Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: flb-grafana-${ENV:-dev}
+    
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+      
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      
+    networks:
+      - flb-monitoring
+      
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+      
+    depends_on:
+      - monitoring
+      
+    restart: unless-stopped
+
+  # Service Proxy: Nginx pour routage et SSL
+  nginx:
+    image: nginx:alpine
+    container_name: flb-proxy-${ENV:-dev}
+    
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+      - test-reports:/usr/share/nginx/html/reports:ro
+      
+    networks:
+      - flb-frontend
+      
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+      
+    secrets:
+      - source: ssl_cert
+        target: /etc/nginx/ssl/cert.pem
+      - source: ssl_key
+        target: /etc/nginx/ssl/key.pem
+        
+    depends_on:
+      - playwright-tests
+      - grafana
+      
+    restart: unless-stopped
+
+# ----------------------------------------
+# Profiles pour différents environnements
+# ----------------------------------------
+profiles:
+  
+  # Profile Development
+  dev:
+    services:
+      - playwright-tests
+      - redis
+      
+  # Profile Testing complet
+  test:
+    services:
+      - playwright-tests
+      - redis
+      - monitoring
+      
+  # Profile Staging avec monitoring complet
+  staging:
+    services:
+      - playwright-tests
+      - redis
+      - monitoring
+      - grafana
+      - nginx
+      
+  # Profile Production sécurisé
+  prod:
+    services:
+      - playwright-tests
+      - redis
+      - monitoring
+      - grafana
+      - nginx
