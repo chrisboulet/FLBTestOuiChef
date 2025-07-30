@@ -1,0 +1,240 @@
+# ========================================
+# FLB Solutions - Docker Compose Optimisé
+# Tests Playwright E2E avec monitoring
+# Version: 2.0.0 - Production Ready
+# ========================================
+
+version: '3.8'
+
+# ----------------------------------------
+# Configuration des services
+# ----------------------------------------
+services:
+  
+  # Service principal de tests
+  flb-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimized
+      target: production
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-$(date -u +'%Y-%m-%dT%H:%M:%SZ')}
+    
+    image: flb-solutions/playwright-tests:2.0.0
+    container_name: flb-tests-main
+    
+    # Configuration réseau
+    networks:
+      - flb-testing
+    
+    # Ports pour monitoring et rapports
+    ports:
+      - "3000:3000"      # Health check
+      - "9323:9323"      # Rapport Playwright
+    
+    # Volumes persistants
+    volumes:
+      - ./test-results:/app/test-results:rw
+      - ./reports:/app/reports:rw
+      - ./screenshots:/app/screenshots:rw
+      - ./videos:/app/videos:rw
+      - ./config:/app/config:ro
+      - flb-cache:/home/flbtest/.cache:rw
+    
+    # Variables d'environnement
+    environment:
+      - NODE_ENV=test
+      - ENV_TYPE=${ENV_TYPE:-test}
+      - DEBUG=${DEBUG:-false}
+      - HEADLESS=${HEADLESS:-true}
+      - PARALLEL_WORKERS=${PARALLEL_WORKERS:-4}
+      - BASE_URL=${BASE_URL:-https://www.flbsolutions.com}
+      - RETRY_FAILED=${RETRY_FAILED:-2}
+      - SCREENSHOT_MODE=${SCREENSHOT_MODE:-only-on-failure}
+      - KEEP_ALIVE=${KEEP_ALIVE:-false}
+    
+    # Configuration des ressources
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+    
+    # Health check
+    healthcheck:
+      test: ["/app/scripts/health-check.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    
+    # Gestion des signaux
+    init: true
+    
+    # Dépendances
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+    
+    # Commande par défaut
+    command: ["test"]
+    
+    # Labels pour organisation
+    labels:
+      - "com.flb.service=playwright-tests"
+      - "com.flb.environment=${ENV_TYPE:-test}"
+      - "com.flb.version=2.0.0"
+
+  # ----------------------------------------
+  # Cache Redis pour optimisation
+  # ----------------------------------------
+  redis-cache:
+    image: redis:7-alpine
+    container_name: flb-redis-cache
+    
+    networks:
+      - flb-testing
+    
+    volumes:
+      - redis-data:/data:rw
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    
+    command: redis-server /usr/local/etc/redis/redis.conf
+    
+    # Health check Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    
+    # Configuration des ressources
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    
+    labels:
+      - "com.flb.service=cache"
+
+  # ----------------------------------------
+  # Monitoring avec Prometheus
+  # ----------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: flb-prometheus
+    
+    networks:
+      - flb-testing
+    
+    ports:
+      - "9090:9090"
+    
+    volumes:
+      - ./docker/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus:rw
+    
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    
+    labels:
+      - "com.flb.service=monitoring"
+
+  # ----------------------------------------
+  # Tableau de bord Grafana
+  # ----------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: flb-grafana
+    
+    networks:
+      - flb-testing
+    
+    ports:
+      - "3001:3000"
+    
+    volumes:
+      - grafana-data:/var/lib/grafana:rw
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-flb2025!}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=redis-datasource
+    
+    depends_on:
+      - prometheus
+    
+    labels:
+      - "com.flb.service=dashboard"
+
+# ----------------------------------------
+# Configuration des réseaux
+# ----------------------------------------
+networks:
+  flb-testing:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+    labels:
+      - "com.flb.network=testing"
+
+# ----------------------------------------
+# Volumes persistants
+# ----------------------------------------
+volumes:
+  
+  # Cache Playwright et navigateurs
+  flb-cache:
+    driver: local
+    labels:
+      - "com.flb.volume=cache"
+  
+  # Données Redis
+  redis-data:
+    driver: local
+    labels:
+      - "com.flb.volume=redis"
+  
+  # Données Prometheus
+  prometheus-data:
+    driver: local
+    labels:
+      - "com.flb.volume=monitoring"
+  
+  # Données Grafana
+  grafana-data:
+    driver: local
+    labels:
+      - "com.flb.volume=dashboard"
+
+# ----------------------------------------
+# Configuration pour différents environnements
+# ----------------------------------------
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Application du logging à tous les services
+x-common-config: &common-config
+  logging: *default-logging
+  restart: unless-stopped

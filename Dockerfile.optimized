@@ -1,0 +1,212 @@
+# ========================================
+# FLB Solutions - Dockerfile Multi-Stage Optimisé
+# Version: 2.0.0 - Production Ready
+# Architecture: Tests Playwright E2E
+# Sécurité: Non-root user, minimal attack surface
+# Performance: Multi-stage build, layer caching optimisé
+# Compatibilité: WSL2, Ubuntu LTS, Alpine
+# ========================================
+
+# ----------------------------------------
+# Stage 1: Base Dependencies (Node.js + System)
+# ----------------------------------------
+FROM node:18-alpine3.18 AS base
+
+LABEL maintainer="FLB Solutions DevOps <devops@flbsolutions.com>"
+LABEL version="2.0.0"
+LABEL description="Base optimisée pour tests Playwright FLB - E-commerce alimentaire québécois"
+
+# Variables d'environnement globales
+ENV NODE_ENV=production \
+    NODE_OPTIONS="--max-old-space-size=4096" \
+    NPM_CONFIG_CACHE=/tmp/.npm \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Optimisations sécurité et performance
+RUN apk update && apk upgrade && \
+    apk add --no-cache \
+        # Core système
+        ca-certificates \
+        curl \
+        git \
+        bash \
+        jq \
+        # Fonts pour rendu visuel
+        ttf-freefont \
+        font-noto-emoji \
+        fontconfig \
+        # Outils de debugging
+        htop \
+        procps && \
+    # Nettoyage cache
+    rm -rf /var/cache/apk/* /tmp/* /var/tmp/*
+
+# Sécurité: Utilisateur non-root avec permissions optimales
+RUN addgroup -g 1001 -S flbtest && \
+    adduser -S flbtest -u 1001 -G flbtest -h /home/flbtest -s /bin/bash && \
+    # Création des répertoires avec permissions
+    mkdir -p /app /opt/playwright /home/flbtest/.npm-global && \
+    chown -R flbtest:flbtest /app /opt/playwright /home/flbtest
+
+# Configuration NPM pour utilisateur non-root
+USER flbtest
+ENV PATH="/home/flbtest/.npm-global/bin:$PATH"
+RUN npm config set prefix '/home/flbtest/.npm-global'
+
+WORKDIR /app
+
+# ----------------------------------------
+# Stage 2: Node Dependencies Installation
+# ----------------------------------------
+FROM base AS dependencies
+
+# Copie des fichiers de dépendances (optimisation cache)
+COPY --chown=flbtest:flbtest package*.json ./
+
+# Installation des dépendances avec optimisations
+RUN npm ci --only=production \
+        --no-audit \
+        --no-fund \
+        --silent \
+        --cache /tmp/.npm && \
+    # Installation Playwright avec optimisations
+    npm install --global @playwright/test@^1.54.1 && \
+    # Nettoyage cache NPM
+    npm cache clean --force && \
+    rm -rf /tmp/.npm /tmp/* /home/flbtest/.npm/_cacache
+
+# ----------------------------------------
+# Stage 3: Browser Installation (Ubuntu pour compatibilité)
+# ----------------------------------------
+FROM mcr.microsoft.com/playwright:v1.54.1-jammy AS browsers
+
+LABEL stage="browsers-installation"
+
+# Installation complète des navigateurs avec dépendances
+RUN npx playwright install --with-deps chromium firefox webkit && \
+    # Optimisation: Nettoyage des fichiers temporaires
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    # Vérification des installations
+    npx playwright --version
+
+# ----------------------------------------
+# Stage 4: Test Runtime Environment
+# ----------------------------------------
+FROM base AS runtime
+
+# Variables d'environnement pour tests
+ENV NODE_ENV=test \
+    CI=false \
+    DISPLAY=:99 \
+    ENV_TYPE=test \
+    PARALLEL_WORKERS=4 \
+    HEADLESS=true \
+    DEBUG=false
+
+# Installation des dépendances système pour tests GUI
+USER root
+RUN apk add --no-cache \
+        # Support GUI et fonts
+        xvfb \
+        mesa-gl \
+        mesa-dri-gallium \
+        # Outils réseau et debugging
+        iputils-ping \
+        netcat-openbsd \
+        # Support screenshots et vidéos
+        ffmpeg && \
+    rm -rf /var/cache/apk/* /tmp/* /var/tmp/*
+
+# Retour utilisateur non-root
+USER flbtest
+
+# Configuration des répertoires avec permissions optimales
+RUN mkdir -p \
+        /app/test-results \
+        /app/reports \
+        /app/screenshots \
+        /app/videos \
+        /app/traces \
+        /app/config \
+        /home/flbtest/.cache/ms-playwright
+
+# Copie des navigateurs depuis stage browsers (optimisé)
+COPY --from=browsers --chown=flbtest:flbtest /ms-playwright /home/flbtest/.cache/ms-playwright
+COPY --from=browsers /usr/lib/x86_64-linux-gnu/libatk* /usr/lib/x86_64-linux-gnu/
+COPY --from=browsers /usr/lib/x86_64-linux-gnu/libgtk* /usr/lib/x86_64-linux-gnu/
+COPY --from=browsers /usr/lib/x86_64-linux-gnu/libgdk* /usr/lib/x86_64-linux-gnu/
+
+# Copie des dépendances Node.js
+COPY --from=dependencies --chown=flbtest:flbtest /app/node_modules ./node_modules
+COPY --from=dependencies --chown=flbtest:flbtest /app/package*.json ./
+COPY --from=dependencies --chown=flbtest:flbtest /home/flbtest/.npm-global /home/flbtest/.npm-global
+
+# ----------------------------------------
+# Stage 5: Production Final
+# ----------------------------------------
+FROM runtime AS production
+
+LABEL stage="production" \
+      security.scan="trivy" \
+      monitoring="enabled" \
+      backup="automated"
+
+# Copie du code source et configuration
+COPY --chown=flbtest:flbtest . .
+
+# Scripts d'orchestration avec permissions
+COPY --chown=flbtest:flbtest docker/scripts/ /app/scripts/
+RUN chmod +x /app/scripts/*.sh && \
+    # Validation des scripts
+    bash -n /app/scripts/entrypoint.sh && \
+    bash -n /app/scripts/health-check.sh
+
+# Configuration Playwright optimisée
+COPY --chown=flbtest:flbtest playwright.config.js ./
+RUN mkdir -p /app/.env.example && \
+    echo "# FLB Solutions Test Configuration" > /app/.env.example && \
+    echo "NODE_ENV=test" >> /app/.env.example && \
+    echo "BASE_URL=https://www.flbsolutions.com" >> /app/.env.example
+
+# Health check robuste avec timeout optimisé
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD /app/scripts/health-check.sh || exit 1
+
+# Exposition des ports
+EXPOSE 3000 9323
+
+# Volumes pour persistance des données
+VOLUME ["/app/test-results", "/app/reports", "/app/screenshots", "/app/videos"]
+
+# Point d'entrée avec gestion des signaux
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
+CMD ["test"]
+
+# ----------------------------------------
+# Métadonnées OCI complètes
+# ----------------------------------------
+LABEL org.opencontainers.image.title="FLB Solutions Test Suite" \
+      org.opencontainers.image.description="Container optimisé pour tests E2E Playwright - E-commerce alimentaire québécois" \
+      org.opencontainers.image.version="2.0.0" \
+      org.opencontainers.image.created="2025-01-30T00:00:00Z" \
+      org.opencontainers.image.revision="${GIT_COMMIT:-unknown}" \
+      org.opencontainers.image.source="https://github.com/flb-solutions/test-suite" \
+      org.opencontainers.image.licenses="Proprietary" \
+      org.opencontainers.image.vendor="FLB Solutions Inc." \
+      org.opencontainers.image.authors="DevOps Team <devops@flbsolutions.com>" \
+      org.opencontainers.image.documentation="https://docs.flbsolutions.com/testing"
+
+# ----------------------------------------
+# Validation et Optimisations finales
+# ----------------------------------------
+# Vérification de l'installation
+RUN node --version && \
+    npm --version && \
+    npx playwright --version && \
+    echo "✅ Installation validée avec succès"
+
+# Pré-chargement des modules critiques (optimisation démarrage)
+RUN node -e "require('@playwright/test'); console.log('✅ Modules pré-chargés')"

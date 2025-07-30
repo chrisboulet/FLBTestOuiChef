@@ -1,0 +1,111 @@
+# ========================================
+# FLB Solutions - Docker Ignore
+# Optimisation build et sécurité
+# ========================================
+
+# ----------------------------------------
+# Fichiers de développement
+# ----------------------------------------
+.git/
+.gitignore
+.gitattributes
+.editorconfig
+
+# Documentation
+*.md
+!README.md
+docs/
+.vscode/
+.idea/
+
+# ----------------------------------------
+# Fichiers Node.js
+# ----------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+.yarn/
+*.tgz
+
+# Fichiers temporaires
+.tmp/
+.temp/
+tmp/
+temp/
+
+# ----------------------------------------
+# Fichiers de tests et résultats
+# ----------------------------------------
+test-results/
+playwright-report/
+reports/
+screenshots/
+videos/
+traces/
+coverage/
+
+# Anciens répertoires
+node_env/
+old/
+backup/
+
+# ----------------------------------------
+# Fichiers de configuration sensibles
+# ----------------------------------------
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.pem
+*.key
+*.crt
+secrets/
+*.secret
+
+# Configuration IDE
+.vscode/settings.json
+.idea/workspace.xml
+
+# ----------------------------------------
+# Fichiers système
+# ----------------------------------------
+.DS_Store
+Thumbs.db
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Cache
+.cache/
+.eslintcache
+.stylelintcache
+
+# ----------------------------------------
+# Docker et infrastructure
+# ----------------------------------------
+Dockerfile.old
+docker-compose.override.yml
+.dockerignore.old
+
+# Monitoring
+prometheus-data/
+grafana-data/
+
+# ----------------------------------------
+# Optimisation build
+# ----------------------------------------
+# Exclure les gros fichiers binaires
+*.zip
+*.tar.gz
+*.iso
+*.dmg
+*.exe
+
+# Exclure les fichiers de backup
+*.bak
+*.backup
+*~
