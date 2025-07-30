@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { handleFLBPopups, loginToFLB, setupRequestInterceptors } = require('../helpers/flb-helpers');
+const { smartNavigate, smartClick, waitForElementReady } = require('../helpers/smart-waits');
 
 test.describe('FLB Tests Authentifiés', () => {
   // Credentials de test
@@ -30,27 +31,48 @@ test.describe('FLB Tests Authentifiés', () => {
   });
 
   test('Ajout au panier fonctionne', async ({ page }) => {
-    await page.goto('/fr/tous-les-produits.html');
+    // Navigation intelligente vers catalogue
+    await smartNavigate(page, '/fr/tous-les-produits.html', {
+      waitForSelectors: ['.product-item'],
+      timeout: 15000
+    });
     
-    // Cliquer sur un produit
-    await page.locator('.product-item').first().click();
+    // Cliquer sur premier produit avec attente intelligente
+    await smartClick(page, '.product-item', {
+      timeout: 10000,
+      waitForResponse: true
+    });
     
-    // Attendre page produit
-    await page.waitForLoadState('networkidle');
+    // Attendre page produit stabilisée
+    await waitForElementReady(page, '#product-addtocart-button', {
+      action: 'clickable',
+      timeout: 10000
+    });
     
-    // Ajuster quantité et ajouter au panier
-    const qtyInput = page.locator('#qty');
-    if (await qtyInput.isVisible()) {
+    // Ajuster quantité si champ présent
+    try {
+      const qtyInput = await waitForElementReady(page, '#qty', {
+        timeout: 2000,
+        retries: 1
+      });
       await qtyInput.fill('2');
+      console.log('✓ Quantité ajustée à 2');
+    } catch (e) {
+      console.log('ℹ️ Champ quantité non trouvé, utilise quantité par défaut');
     }
     
-    await page.locator('#product-addtocart-button').click();
+    // Ajouter au panier avec attente de réponse
+    await smartClick(page, '#product-addtocart-button', {
+      waitForResponse: true,
+      responseTimeout: 10000
+    });
     
-    // Vérifier message de succès ou compteur panier
-    const successMessage = page.locator('.message-success');
-    const cartCounter = page.locator('.counter-number');
+    // Vérifier succès avec attente intelligente
+    const successMessage = page.locator('.message-success, .messages .message-success');
+    const cartCounter = page.locator('.counter-number, .minicart-wrapper .counter-number');
     
     await expect(successMessage.or(cartCounter)).toBeVisible({ timeout: 10000 });
+    console.log('✓ Produit ajouté au panier avec succès');
   });
 
   test('Accès Mon Compte', async ({ page }) => {

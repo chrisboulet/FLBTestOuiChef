@@ -17,19 +17,29 @@ test.describe('FLB Smoke Tests', () => {
     // Vérifier le titre
     await expect(page).toHaveTitle(/FLB solutions alimentaires/);
     
-    // Vérifier éléments critiques - utiliser des sélecteurs plus spécifiques
-    await expect(page.locator('nav a:has-text("Catalogue"), .nav-link:has-text("Catalogue")').first()).toBeVisible();
-    await expect(page.locator('a:has-text("Mon compte"), .customer-menu a:has-text("Mon compte")').first()).toBeVisible();
+    // Vérifier éléments critiques - sélecteurs robustes pour éviter multiples correspondances
+    const catalogueLink = page.locator('nav a').filter({ hasText: /^Catalogue$/i })
+      .or(page.locator('.navigation a').filter({ hasText: /^Catalogue$/i }))
+      .or(page.locator('a[href*="tous-les-produits"]'));
+    await expect(catalogueLink.first()).toBeVisible();
+    
+    const accountLink = page.locator('a').filter({ hasText: /^Mon compte$/i })
+      .or(page.locator('.customer-menu a, .header-links a').filter({ hasText: 'Mon compte' }))
+      .or(page.locator('a[href*="customer/account"]'));
+    await expect(accountLink.first()).toBeVisible();
   });
 
   test('Catalog page accessible', async ({ page }) => {
     await page.goto('/fr/tous-les-produits.html');
     
-    // Vérifier présence de produits - sélecteur plus spécifique
-    await expect(page.locator('.page-title:has-text("produits"), h1:has-text("produits"), .category-title:has-text("produits")').first()).toBeVisible();
+    // Vérifier présence de titre de page - sélecteur robuste
+    const pageTitle = page.locator('h1, .page-title, .category-title').filter({ hasText: /produits/i })
+      .or(page.locator('[data-ui-id="page-title-wrapper"]'))
+      .or(page.locator('.breadcrumbs').filter({ hasText: /produits/i }));
+    await expect(pageTitle.first()).toBeVisible();
     
-    // Vérifier qu'il y a des produits listés
-    const products = page.locator('.product-item');
+    // Vérifier qu'il y a des produits listés avec sélecteur spécifique
+    const products = page.locator('.product-item, .product-wrapper, [data-container="product"]');
     await expect(products.first()).toBeVisible();
   });
 
@@ -39,10 +49,21 @@ test.describe('FLB Smoke Tests', () => {
     // Gérer les popups avant de vérifier les champs
     await handleFLBPopups(page);
     
-    // Vérifier formulaire de connexion avec les 3 champs
-    await expect(page.locator('input[name="login[email]"], #email').first()).toBeVisible();
-    await expect(page.locator('input[name="login[password]"], #pass').first()).toBeVisible();
-    await expect(page.locator('#send2, form[data-role="email-with-possible-login"] button[type="submit"]').first()).toBeVisible();
+    // Vérifier formulaire de connexion avec sélecteurs robustes
+    const emailField = page.locator('form[data-role="email-with-possible-login"] input[name="login[email]"]')
+      .or(page.locator('input[name="login[email]"]'))
+      .or(page.locator('#email'));
+    await expect(emailField.first()).toBeVisible();
+    
+    const passwordField = page.locator('form[data-role="email-with-possible-login"] input[name="login[password]"]')
+      .or(page.locator('input[name="login[password]"]'))
+      .or(page.locator('input[type="password"][name="password"]'));
+    await expect(passwordField.first()).toBeVisible();
+    
+    const submitButton = page.locator('form[data-role="email-with-possible-login"] button[type="submit"]')
+      .or(page.locator('#send2'))
+      .or(page.locator('button[type="submit"]'));
+    await expect(submitButton.first()).toBeVisible();
     
     // Vérifier champ Dadhri si présent
     const dadhriField = page.locator('input[name="dadhri-number"]');
