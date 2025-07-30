@@ -1,0 +1,31 @@
+{
+    "name": "flb-regression-tests",
+    "version": "1.0.0",
+    "description": "Tests de régression automatisés FLB Solutions",
+    "main": "index.js",
+    "scripts": {
+        "setup": "node setup-credentials.js",
+        "test": "dotenv -e .env -- playwright test",
+        "test:headed": "dotenv -e .env -- playwright test --headed",
+        "test:chromium": "dotenv -e .env -- playwright test --project=chromium",
+        "test:all-browsers": "dotenv -e .env -- playwright test --project=chromium --project=firefox --project=webkit",
+        "test:parallel": "dotenv -e .env -- playwright test --workers=4",
+        "test:smoke": "dotenv -e .env -- playwright test tests/smoke/",
+        "test:auth": "dotenv -e .env -- playwright test tests/smoke/flb-authenticated.spec.js",
+        "test:critical": "dotenv -e .env -- playwright test tests/critical/",
+        "test:quality": "dotenv -e .env -- playwright test tests/quality/",
+        "test:regression": "dotenv -e .env -- playwright test",
+        "report": "playwright show-report"
+    },
+    "keywords": [
+        "playwright",
+        "testing",
+        "e2e",
+        "regression"
+    ],
+    "author": "",
+    "license": "ISC",
+    "devDependencies": {
+        "@playwright/test": "^1.54.1"
+    }
+}
